@@ -10,6 +10,39 @@ import UsageEvent from '../models/UsageEvent.js';
 
 const router = express.Router();
 
+async function createStreamWithFallback(messages) {
+  const primaryModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const fallbackModel = process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o-mini';
+  const candidates = Array.from(new Set([primaryModel, fallbackModel].filter(Boolean)));
+  let lastErr = null;
+
+  for (const model of candidates) {
+    try {
+      const stream = await openai.chat.completions.create({
+        model,
+        stream: true,
+        messages,
+      });
+      return { stream, model };
+    } catch (err) {
+      lastErr = err;
+      const status = Number(err?.status || 0);
+      const code = String(err?.code || err?.error?.code || '').toLowerCase();
+      const msg = String(err?.message || '').toLowerCase();
+      const isModelIssue =
+        status === 404 ||
+        code === 'model_not_found' ||
+        msg.includes('model') ||
+        msg.includes('not found') ||
+        msg.includes('does not exist') ||
+        msg.includes('do not have access');
+      if (!isModelIssue) throw err;
+    }
+  }
+
+  throw lastErr || new Error('No OpenAI model available');
+}
+
 router.post('/chat/stream', auth, async (req, res) => {
   const { message, chatId, messageId } = req.body;
   const user = await User.findById(req.user.id);
@@ -113,11 +146,8 @@ router.post('/chat/stream', auth, async (req, res) => {
       ];
     });
 
-    const stream = await openai.chat.completions.create({
-      model: 'gpt-5-mini',
-      stream: true,
-      messages: openAIMessages
-    });
+    const { stream, model } = await createStreamWithFallback(openAIMessages);
+    console.log(`[chat] using model: ${model}`);
 
     for await (const chunk of stream) {
       const token = chunk.choices[0]?.delta?.content;
@@ -156,8 +186,14 @@ router.post('/chat/stream', auth, async (req, res) => {
       res.write(`event: done\ndata: ${JSON.stringify({ chatId: String(chat._id) })}\n\n`);
       res.end();
   } catch (err) {
+    console.error('[chat] stream failed:', err?.status || '', err?.code || '', err?.message || err);
     // If the call failed, keep the request count but leave credits at 0.
-    res.write(`event: error\ndata: ${JSON.stringify({ error: 'failed' })}\n\n`);
+    res.write(
+      `event: error\ndata: ${JSON.stringify({
+        error: 'failed',
+        detail: String(err?.message || 'Chat request failed'),
+      })}\n\n`
+    );
     res.end();
   }
 });
