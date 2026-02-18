@@ -4,9 +4,11 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import User from '../models/User.js';
 import auth from '../middleware/authMiddleware.js';
-import { emitAdminEvent } from '../realtime.js';
+import { emitAdminEvent, isUserOnline } from '../realtime.js';
 import LogoutEvent from '../models/LogoutEvent.js';
 import { serverBootSec } from '../serverBoot.js';
+import { ADMIN_USERNAME } from '../config/admin.js';
+import { getClientIpFromReq } from '../utils/clientIp.js';
 
 const router = express.Router();
 
@@ -29,6 +31,16 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Account disabled' });
     }
 
+    // Ensure the configured admin username always has admin role.
+    if (
+      ADMIN_USERNAME &&
+      String(user.username || '').toLowerCase() === String(ADMIN_USERNAME).toLowerCase() &&
+      user.role !== 'admin'
+    ) {
+      await User.updateOne({ _id: user._id }, { $set: { role: 'admin' } }).catch(() => {});
+      user.role = 'admin';
+    }
+
     if (!process.env.JWT_SECRET) {
       console.error('JWT_SECRET is not defined');
       return res.status(500).json({ error: 'Server configuration error' });
@@ -36,6 +48,7 @@ router.post('/login', async (req, res) => {
 
     const now = new Date();
     const sessionId = crypto.randomBytes(18).toString('hex');
+    const ip = getClientIpFromReq(req);
 
     // Prevent concurrent logins for the same username.
     // Safety valve: if we never observed a logout/disconnect, allow re-login after 12 hours.
@@ -61,7 +74,26 @@ router.post('/login', async (req, res) => {
     );
 
     if (!locked) {
-      return res.status(409).json({ error: 'User already logged in' });
+      // If the user isn't actually online (no active sockets), allow a safe takeover.
+      // This handles stale locks when the browser/tab was closed without a clean logout.
+      const online = isUserOnline(user._id);
+      if (online) {
+        return res.status(409).json({ error: 'User already logged in' });
+      }
+
+      const takeover = await User.findOneAndUpdate(
+        { _id: user._id, isActive: true },
+        {
+          $set: {
+            lastLogin: now,
+            lastLogout: now,
+            activeSession: { sessionId, bootSec: serverBootSec, createdAt: now },
+          },
+        },
+        { new: true },
+      );
+
+      if (!takeover) return res.status(409).json({ error: 'User already logged in' });
     }
 
     const token = jwt.sign(
@@ -71,12 +103,13 @@ router.post('/login', async (req, res) => {
 
     // record login activity
     const LoginEvent = (await import('../models/LoginEvent.js')).default;
-    LoginEvent.create({ userId: user._id }).catch(() => {});
+    LoginEvent.create({ userId: user._id, ip }).catch(() => {});
 
     emitAdminEvent({
       type: 'LOGIN',
       userId: String(user._id),
-      username: user.username
+      username: user.username,
+      ip
     });
     res.json({ token });
   } catch (err) {
@@ -104,11 +137,12 @@ router.post('/logout', async (req, res) => {
 
     // Only emit logout if we actually cleared the current session.
     if (r && r.modifiedCount) {
-      LogoutEvent.create({ userId: id }).catch(() => {});
+      LogoutEvent.create({ userId: id, ip: getClientIpFromReq(req) }).catch(() => {});
       emitAdminEvent({
         type: 'LOGOUT',
         userId: String(id),
-        username: username || undefined
+        username: username || undefined,
+        ip: getClientIpFromReq(req)
       });
     }
     res.sendStatus(204);

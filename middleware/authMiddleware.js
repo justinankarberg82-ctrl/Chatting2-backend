@@ -14,9 +14,16 @@ export default async function auth(req, res, next) {
       return res.status(401).json({ message: 'Session expired' });
     }
 
-    const user = await User.findById(req.user.id).select('isActive');
+    const user = await User.findById(req.user.id).select('isActive activeSession.sessionId');
     if (!user) return res.sendStatus(401);
     if (!user.isActive) return res.status(403).json({ message: 'Account disabled' });
+
+    // Enforce single-session tokens.
+    const tokenSid = req.user?.sid ? String(req.user.sid) : '';
+    const currentSid = user?.activeSession?.sessionId ? String(user.activeSession.sessionId) : '';
+    if (!tokenSid || !currentSid || tokenSid !== currentSid) {
+      return res.status(401).json({ message: 'Session expired' });
+    }
     next();
   } catch {
     res.sendStatus(401);

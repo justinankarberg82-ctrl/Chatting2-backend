@@ -5,6 +5,7 @@ const ChatEventSchema = new mongoose.Schema({
   chatId: { type: mongoose.Schema.Types.ObjectId, ref: 'Chat', required: true },
   type: { type: String, enum: ['CHAT_CREATED', 'CHAT_DELETED'], required: true },
   title: { type: String, default: '' },
+  ip: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
 });
 

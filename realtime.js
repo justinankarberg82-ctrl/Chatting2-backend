@@ -1,8 +1,23 @@
 import jwt from 'jsonwebtoken';
 import { Server as SocketIOServer } from 'socket.io';
 import { serverBootSec } from './serverBoot.js';
+import { getClientIpFromSocket } from './utils/clientIp.js';
 
 let io;
+
+// Track connected sockets per userId for presence + login-takeover decisions.
+// Module-scoped so routes can consult it.
+const onlineCounts = new Map(); // userId -> number
+const offlineTimers = new Map(); // userId -> timeout
+
+export function getOnlineCount(userId) {
+  if (!userId) return 0;
+  return onlineCounts.get(String(userId)) || 0;
+}
+
+export function isUserOnline(userId) {
+  return getOnlineCount(userId) > 0;
+}
 
 export function initRealtime(httpServer) {
   io = new SocketIOServer(httpServer, {
@@ -12,10 +27,7 @@ export function initRealtime(httpServer) {
     }
   });
 
-  const onlineCounts = new Map(); // userId -> number
-  const offlineTimers = new Map(); // userId -> timeout
-
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token =
       socket.handshake.auth?.token ||
       socket.handshake.headers?.authorization?.split(' ')[1];
@@ -25,6 +37,17 @@ export function initRealtime(httpServer) {
 
     try {
       socket.user = jwt.verify(token, process.env.JWT_SECRET);
+
+      // Enforce single-session tokens (sid must match DB activeSession).
+      if (socket.user?.id && socket.user?.sid) {
+        const { default: User } = await import('./models/User.js');
+        const u = await User.findById(socket.user.id).select('isActive activeSession.sessionId');
+        if (!u || !u.isActive) return next(new Error('unauthorized'));
+        const currentSid = u?.activeSession?.sessionId ? String(u.activeSession.sessionId) : '';
+        if (!currentSid || currentSid !== String(socket.user.sid)) {
+          return next(new Error('unauthorized'));
+        }
+      }
 
       // Force re-login after server restart.
       if (typeof socket.user?.iat === 'number' && socket.user.iat < serverBootSec) {
@@ -92,8 +115,8 @@ export function initRealtime(httpServer) {
                      },
                      { $set: { lastLogout: new Date() }, $unset: { activeSession: 1 } },
                    ).catch(() => {});
-                   await LogoutEvent.create({ userId }).catch(() => {});
-                   emitAdminEvent({ type: 'LOGOUT', userId });
+                    await LogoutEvent.create({ userId, ip: getClientIpFromSocket(socket) }).catch(() => {});
+                    emitAdminEvent({ type: 'LOGOUT', userId, ip: getClientIpFromSocket(socket) });
                 })
                 .catch(() => {});
             }
@@ -121,6 +144,13 @@ export function emitUserEvent(userId, event) {
     ...event,
     at: event?.at || new Date().toISOString()
   });
+}
+
+export function forceLogoutUser(userId, reason) {
+  if (!io || !userId) return;
+  emitUserEvent(userId, { type: 'FORCE_LOGOUT', reason: reason || 'logout' });
+  // Delay disconnect slightly so the event has time to arrive.
+  setTimeout(() => disconnectUserSockets(userId), 180);
 }
 
 export function disconnectUserSockets(userId) {

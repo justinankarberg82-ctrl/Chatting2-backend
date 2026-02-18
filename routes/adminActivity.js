@@ -42,7 +42,8 @@ router.get('/admin/users/:id/activity', async (req, res) => {
       type: 'LOGIN',
       createdAt: e.createdAt,
       userId: String(id),
-      username: user.username
+      username: user.username,
+      ip: e.ip || ''
     });
   }
 
@@ -52,7 +53,8 @@ router.get('/admin/users/:id/activity', async (req, res) => {
       type: 'LOGOUT',
       createdAt: e.createdAt,
       userId: String(id),
-      username: user.username
+      username: user.username,
+      ip: e.ip || ''
     });
   }
 
@@ -63,6 +65,7 @@ router.get('/admin/users/:id/activity', async (req, res) => {
       createdAt: e.createdAt,
       userId: String(id),
       username: user.username,
+      ip: e.ip || '',
       chatId: e.chatId ? String(e.chatId) : null,
       title: e.title || ''
     });
@@ -76,6 +79,7 @@ router.get('/admin/users/:id/activity', async (req, res) => {
       action: e.action,
       actorUsername: e.actorUsername || e.actorId?.username || 'System',
       actorRole: e.actorId?.role,
+      ip: e.actorIp || '',
       targetId: e.targetId ? String(e.targetId) : null,
       targetUsername: e.targetUsername,
       metadata: e.metadata || {}

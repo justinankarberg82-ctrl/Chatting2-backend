@@ -3,9 +3,9 @@ import User from '../models/User.js';
 import AuditEvent from '../models/AuditEvent.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import adminMiddleware from '../middleware/adminMiddleware.js';
-import { emitAdminEvent } from '../realtime.js';
-import { emitUserEvent, disconnectUserSockets } from '../realtime.js';
+import { emitAdminEvent, forceLogoutUser } from '../realtime.js';
 import { canAccessProtectedUsers, isProtectedUsername, filterUsersForAdmin } from '../utils/protectedUsers.js';
+import { getClientIpFromReq } from '../utils/clientIp.js';
 
 const router = express.Router();
 
@@ -56,6 +56,7 @@ router.post('/admin/users', async (req, res) => {
     AuditEvent.create({
       actorId: req.user?.id || req.user?._id,
       actorUsername: req.user?.username || 'unknown',
+      actorIp: getClientIpFromReq(req),
       action: 'CREATE_USER',
       targetId: user._id,
       targetUsername: user.username,
@@ -67,7 +68,8 @@ router.post('/admin/users', async (req, res) => {
       userId: String(user._id),
       username: user.username,
       role: user.role,
-      isActive: user.isActive
+      isActive: user.isActive,
+      ip: getClientIpFromReq(req)
     });
 
     res.status(201).json(user);
@@ -134,6 +136,7 @@ router.patch('/admin/users/:id', async (req, res) => {
       AuditEvent.create({
         actorId: req.user?.id || req.user?._id,
         actorUsername: req.user?.username || 'unknown',
+        actorIp: getClientIpFromReq(req),
         action: 'UPDATE_USER',
         targetId: user._id,
         targetUsername: user.username,
@@ -143,9 +146,7 @@ router.patch('/admin/users/:id', async (req, res) => {
 
     // If we just disabled an account, force any active sessions to logout.
     if (prevIsActive && user.isActive === false) {
-      emitUserEvent(user._id, { type: 'FORCE_LOGOUT', reason: 'disabled' });
-      // Kick immediately; small delay so the event can flush.
-      setTimeout(() => disconnectUserSockets(user._id), 10);
+      forceLogoutUser(user._id, 'disabled');
     }
 
     emitAdminEvent({
@@ -153,7 +154,8 @@ router.patch('/admin/users/:id', async (req, res) => {
       userId: String(user._id),
       username: user.username,
       role: user.role,
-      isActive: user.isActive
+      isActive: user.isActive,
+      ip: getClientIpFromReq(req)
     });
     res.json({ message: 'User updated' });
   } catch (err) {
@@ -161,9 +163,9 @@ router.patch('/admin/users/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/admin/users/:id - permanently delete user (with audit log)
-router.delete('/admin/users/:id', async (req, res) => {
-  try {
+  // DELETE /api/admin/users/:id - permanently delete user (with audit log)
+  router.delete('/admin/users/:id', async (req, res) => {
+    try {
     const actorId = req.user?.id || req.user?._id;
     if (!actorId) return res.sendStatus(401);
     const actorUsername = req.user?.username;
@@ -186,20 +188,25 @@ router.delete('/admin/users/:id', async (req, res) => {
     await AuditEvent.create({
       actorId,
       actorUsername: actorUsername || 'unknown',
+      actorIp: getClientIpFromReq(req),
       action: 'DELETE_USER',
       targetId: user._id,
       targetUsername: user.username
     });
 
-    await user.deleteOne();
+      // If the user is currently logged in, force logout + disconnect sockets before deletion.
+      forceLogoutUser(user._id, 'deleted');
+
+      await user.deleteOne();
 
     emitAdminEvent({
       type: 'USER_DELETED',
       userId: String(user._id),
-      username: user.username
+      username: user.username,
+      ip: getClientIpFromReq(req)
     });
-    res.sendStatus(204);
-  } catch (err) {
+      res.sendStatus(204);
+    } catch (err) {
     console.error('DELETE /api/admin/users/:id failed:', err?.message || err);
     res.status(500).json({ message: 'Failed to delete user' });
   }

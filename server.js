@@ -16,11 +16,15 @@ import adminUsersRoutes from './routes/adminUsers.js';
 import adminChatsRoutes from './routes/adminChats.js';
 import adminExportRoutes from './routes/adminExport.js';
 import { initRealtime } from './realtime.js';
+import { ADMIN_USERNAME } from './config/admin.js';
+import User from './models/User.js';
 
 dotenv.config();
 const PORT = process.env.PORT || 5000;
 
 const app = express();
+// Trust reverse proxy so req.ip and rate limiting behave correctly.
+app.set('trust proxy', true);
 app.use(cors());
 app.use(express.json());
 
@@ -41,7 +45,24 @@ app.use('/api', adminExportRoutes);
 
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => {
+  .then(async () => {
+    // Ensure a fixed admin account exists.
+    try {
+      const name = String(ADMIN_USERNAME || '').trim();
+      if (name) {
+        const existing = await User.findOne({ username: new RegExp(`^${name}$`, 'i') });
+        if (!existing) {
+          await User.create({ username: name, role: 'admin', isActive: true });
+          console.log(`Admin user created: ${name}`);
+        } else if (existing.role !== 'admin' || !existing.isActive) {
+          await User.updateOne({ _id: existing._id }, { $set: { role: 'admin', isActive: true } });
+          console.log(`Admin user ensured: ${existing.username}`);
+        }
+      }
+    } catch (e) {
+      console.error('Admin user ensure failed:', e?.message || e);
+    }
+
     server.listen(PORT, () => {
       console.log(`Server running on ${PORT}`);
     });

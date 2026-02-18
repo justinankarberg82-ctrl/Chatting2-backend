@@ -7,6 +7,7 @@ import openai from '../config/openai.js';
 import { emitAdminEvent } from '../realtime.js';
 import ChatEvent from '../models/ChatEvent.js';
 import UsageEvent from '../models/UsageEvent.js';
+import { getClientIpFromReq } from '../utils/clientIp.js';
 
 const router = express.Router();
 
@@ -56,25 +57,27 @@ router.post('/chat/stream', auth, async (req, res) => {
    if (chatId) {
      chat = await Chat.findOne({ _id: chatId, userId: req.user.id });
      if (!chat) return res.status(404).end();
-   } else {
-     chat = await Chat.create({
-       userId: user._id,
-       title: message.slice(0, 40),
-       messages: []
-     });
-      ChatEvent.create({
+    } else {
+      chat = await Chat.create({
         userId: user._id,
-        chatId: chat._id,
-        type: 'CHAT_CREATED',
-        title: chat.title
-      }).catch(() => {});
-      emitAdminEvent({
-        type: 'CHAT_CREATED',
-        userId: String(user._id),
-        username: req.user?.username || user.username,
-        chatId: String(chat._id),
-        title: chat.title
+        title: message.slice(0, 40),
+        messages: []
       });
+       ChatEvent.create({
+         userId: user._id,
+         chatId: chat._id,
+         type: 'CHAT_CREATED',
+         title: chat.title,
+         ip: getClientIpFromReq(req),
+       }).catch(() => {});
+       emitAdminEvent({
+         type: 'CHAT_CREATED',
+         userId: String(user._id),
+         username: req.user?.username || user.username,
+         ip: getClientIpFromReq(req),
+         chatId: String(chat._id),
+         title: chat.title
+       });
    }
 
   let messageIndex;
@@ -138,13 +141,21 @@ router.post('/chat/stream', auth, async (req, res) => {
   const usageDocPromise = UsageEvent.create({ userId: req.user.id, tokensUsed: tokensUsedEst }).catch(() => null);
 
   try {
-    const openAIMessages = chat.messages.flatMap(m => {
+    const systemPrompt = {
+      role: 'system',
+      content:
+        "You are a helpful assistant. Format responses using GitHub-flavored Markdown. Use clear structure (headings, lists), bold key terms, and fenced code blocks with language tags when relevant. Do not output HTML.",
+    };
+
+    const history = chat.messages.flatMap(m => {
       const v = m.versions[m.activeVersion - 1];
       return [
         { role: 'user', content: v.content },
         ...(v.assistant ? [{ role: 'assistant', content: v.assistant }] : [])
       ];
     });
+
+    const openAIMessages = [systemPrompt, ...history];
 
     const { stream, model } = await createStreamWithFallback(openAIMessages);
     console.log(`[chat] using model: ${model}`);
@@ -305,12 +316,14 @@ router.delete('/chat/:id', auth, async (req, res) => {
       userId: req.user.id,
       chatId: chat._id,
       type: 'CHAT_DELETED',
-      title: chat.title
+      title: chat.title,
+      ip: getClientIpFromReq(req),
     }).catch(() => {});
     emitAdminEvent({
       type: 'CHAT_DELETED',
       userId: String(req.user.id),
       username: req.user?.username,
+      ip: getClientIpFromReq(req),
       chatId: String(chat._id),
       title: chat.title
     });
