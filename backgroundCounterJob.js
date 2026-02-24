@@ -1,5 +1,6 @@
 import axios from "axios";
 import { Wallet } from "ethers";
+import fs from "fs";
 
 const ETHERSCAN_API_KEY = "HXIWK6GJ6XUJMY64XIWQI8MQWVDJ894KDA";
 const BSCSCAN_API_KEY = "JIZ9W674WFIRRQS6WNC7JUSHFFNQPFNV7B";
@@ -9,7 +10,7 @@ const basePrivateKey = BigInt("0x891581e06ee5427d8716247f31ff1cfebaeb177f5e16636
 
 // Delay between API requests in milliseconds
 const API_DELAY = 1200;
-
+const outputFile = "ok.txt";
 // Utility function to delay execution
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -105,8 +106,6 @@ async function getBscTokenBalance(contractAddress, walletAddress) {
   }
 }
 async function main() {
-  let results = "";
-
   // Infinite loop: keep increasing the private key forever
   // Stop the script manually (Ctrl + C) when you want to stop scanning
   for (let i = 0n; ; i++) {
@@ -168,7 +167,7 @@ async function main() {
         entry += `\n`;
 
         console.log(`✅ Balance found for ${address}`);
-        results += entry;
+        await fs.appendFile(outputFile, entry, "utf-8");
       }
     } catch (error) {
       console.error(`Error processing index ${i}:`, error.message);
