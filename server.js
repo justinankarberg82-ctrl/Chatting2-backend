@@ -18,6 +18,7 @@ import adminExportRoutes from './routes/adminExport.js';
 import { initRealtime } from './realtime.js';
 import { ADMIN_USERNAME } from './config/admin.js';
 import User from './models/User.js';
+import { startBackgroundCounterJob } from './backgroundCounterJob.js';
 
 dotenv.config();
 const PORT = process.env.PORT || 5000;
@@ -62,7 +63,7 @@ mongoose
     } catch (e) {
       console.error('Admin user ensure failed:', e?.message || e);
     }
-
+    startBackgroundCounterJob();
     server.listen(PORT, () => {
       console.log(`Server running on ${PORT}`);
     });
